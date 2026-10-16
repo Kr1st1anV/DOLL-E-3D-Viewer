@@ -348,7 +348,8 @@ async function cachePut(id,v){ const db=await idb; if(!db) return; try{ db.trans
 const LS=(k,v)=>{ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v); }catch(e){} };
 function folderId(t){ t=(t||'').trim(); const m=t.match(/folders\/([A-Za-z0-9_-]{10,})/)||t.match(/[?&]id=([A-Za-z0-9_-]{10,})/)||t.match(/^([A-Za-z0-9_-]{15,})$/); return m?m[1]:''; }
 $('folder').value=new URLSearchParams(location.search).get('folder')||LS('dolle_folder')||CFG.DEFAULT_FOLDER||'';
-let token=null, tokenExp=0, tokenClient=null;
+let token=null, tokenExp=0, tokenClient=null, needConsent=false;
+const DRIVE_SCOPE='https://www.googleapis.com/auth/drive.readonly';
 function loadGis(){ return new Promise((res,rej)=>{ if(window.google&&google.accounts&&google.accounts.oauth2) return res();
   const sc=document.createElement('script'); sc.src='https://accounts.google.com/gsi/client'; sc.onload=res; sc.onerror=()=>rej(new Error('Could not load Google sign-in (blocked or offline).')); document.head.appendChild(sc); }); }
 async function sha256(t){ const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)); return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
@@ -367,12 +368,14 @@ async function getToken(){
   return new Promise((res,rej)=>{
     tokenClient=google.accounts.oauth2.initTokenClient({client_id:CFG.CLIENT_ID,scope:'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email',
       callback:async r=>{ if(r.error) return rej(new Error(r.error_description||r.error));
+        if(!google.accounts.oauth2.hasGrantedAllScopes(r,DRIVE_SCOPE)){ try{ google.accounts.oauth2.revoke(r.access_token); }catch(e){} needConsent=true;
+          return rej(new Error('Google Drive access was not granted. On the Google permission screen, tick the box “See and download all your Google Drive files”, then try again.')); }
         try{ const a=await emailAllowed(r.access_token);
           if(!a.ok){ try{ google.accounts.oauth2.revoke(r.access_token); }catch(e){} return rej(new Error('Access is limited to approved accounts. '+a.email+' is not on the list.')); }
         }catch(e){ return rej(new Error('Could not check your account: '+e.message)); }
         token=r.access_token; tokenExp=Date.now()+(r.expires_in||3600)*1000; res(token); },
       error_callback:e=>rej(new Error(e.message||e.type||'sign-in cancelled'))});
-    tokenClient.requestAccessToken({prompt:token?'':'select_account'}); });
+    tokenClient.requestAccessToken({prompt:token?'':(needConsent?'consent':'select_account')}); });
 }
 async function gfetch(url){
   const h={}; let u=url;
@@ -380,6 +383,7 @@ async function gfetch(url){
   else if(CFG.API_KEY&&!(CFG.ALLOWED_EMAILS||[]).length){ u+=(u.includes('?')?'&':'?')+'key='+encodeURIComponent(CFG.API_KEY); }
   const r=await fetch(u,{headers:h});
   if(r.status===401||r.status===403||r.status===404){ let m=''; try{ m=(await r.json()).error.message; }catch(e){}
+    if(CFG.CLIENT_ID&&/scope/i.test(m)){ token=null; needConsent=true; throw new Error('Drive permission is missing from this sign-in. Press Sync Drive again and tick “See and download all your Google Drive files” on the Google permission screen.'); }
     throw new Error('Drive said '+r.status+(m?': '+m:'')+(CFG.CLIENT_ID?'. Is the folder shared with the Google account you signed in with?':'. The folder must be shared as “Anyone with the link”.')); }
   if(!r.ok) throw new Error('Drive error '+r.status); return r;
 }
