@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>DOLL-E 3D model viewer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Segoe UI,Arial,sans-serif;font-size:13px;display:flex;height:100vh;background:#1c1f24;color:#e6e6e6;overflow:hidden}
+#side{width:330px;background:#262a31;border-right:1px solid #111;display:flex;flex-direction:column}
+#side h1{font-size:15px;margin:0;padding:10px 12px;background:#800000;color:#fff}
+#tools{padding:8px 10px;border-bottom:1px solid #111}
+#tools input[type=text]{width:100%;padding:5px;background:#16181c;color:#eee;border:1px solid #444;border-radius:3px}
+button{background:#3a404a;color:#eee;border:1px solid #555;border-radius:3px;padding:4px 8px;cursor:pointer;font-size:12px;margin:3px 3px 0 0}
+button:hover{background:#4b5360}
+#list{flex:1;overflow:auto;padding:4px 0}
+.folder{padding:6px 10px 2px;color:#e0a0a0;font-weight:600;font-size:12px}
+.item{padding:4px 10px 4px 18px;cursor:pointer;display:flex;justify-content:space-between;gap:6px}
+.item:hover{background:#333a44}.item.sel{background:#5a1f1f}
+.item .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.item .s{color:#999;font-size:11px;white-space:nowrap}
+.tag{font-size:10px;background:#555;border-radius:3px;padding:0 4px;margin-left:4px;color:#ddd}
+#main{flex:1;position:relative}
+canvas{display:block}
+#hud{position:absolute;top:8px;left:8px;background:rgba(20,22,26,.85);padding:8px 10px;border-radius:4px;max-width:360px;line-height:1.5}
+#ctl{position:absolute;top:8px;right:8px;background:rgba(20,22,26,.85);padding:8px 10px;border-radius:4px;width:250px}
+#ctl label{display:block;margin:3px 0}
+#parts{position:absolute;bottom:8px;right:8px;background:rgba(20,22,26,.85);padding:6px 10px;border-radius:4px;width:250px;max-height:38vh;overflow:auto}
+#parts div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#msg{position:absolute;bottom:8px;left:8px;background:rgba(20,22,26,.85);padding:6px 10px;border-radius:4px;max-width:50%}
+a{color:#9cf}
+#gate{position:fixed;inset:0;z-index:99;background:#1c1f24;display:flex;align-items:center;justify-content:center;text-align:center}
+#gate .box{background:#262a31;border:1px solid #111;border-top:4px solid #800000;border-radius:6px;padding:28px 34px;max-width:420px}
+#gate h2{margin:0 0 6px;font-size:18px}#gate p{color:#bbb;line-height:1.5}
+#gate button{font-size:14px;padding:8px 16px;margin-top:10px}
+#gate .err{color:#ff9d9d;margin-top:12px;min-height:1.2em}
+#tools .row{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+button.pri{background:#800000;border-color:#a33;color:#fff;font-weight:600}
+button.pri:hover{background:#a01010}
+#drop{display:none;position:absolute;inset:0;background:rgba(128,0,0,.35);border:3px dashed #fff;z-index:9;align-items:center;justify-content:center;font-size:20px}
+#prog{height:4px;background:#111;margin-top:6px;display:none}#prog div{height:100%;width:0;background:#c33}
+#help{display:none;margin-top:6px;font-size:12px;color:#ccc;line-height:1.4}
+</style></head><body>
+<div id="side">
+  <h1>DOLL-E 3D models</h1>
+  <div id="tools">
+    <input id="q" type="text" placeholder="Search models…">
+    <div class="row">
+      <button id="sync" class="pri" title="Fetch every CAD file in the Google Drive folder below (including subfolders)">Sync Drive</button>
+      <button id="addf" title="Open CAD files from this computer (nothing is uploaded)">Add files…</button>
+      <button id="clr">Clear</button>
+    </div>
+    <input id="folder" type="text" placeholder="Google Drive folder link or ID" style="margin-top:6px" spellcheck="false">
+    <div id="prog"><div></div></div>
+    <div id="help"></div>
+    <input id="fileinp" type="file" multiple accept=".step,.stp,.stl,.3mf,.obj,.pdf,.zip" style="display:none">
+    <div id="count" style="margin-top:6px;color:#aaa"></div>
+  </div>
+  <div id="list"></div>
+</div>
+<div id="main">
+  <div id="drop">Drop CAD files here</div>
+  <div id="hud">Pick a model on the left.<br><span style="color:#aaa">Drag = rotate · right-drag = pan · wheel = zoom</span></div>
+  <div id="ctl" style="display:none">
+    <div><button data-v="iso">Iso</button><button data-v="top">Top</button><button data-v="front">Front</button><button data-v="right">Right</button><button id="fit">Fit</button><button id="shot">PNG</button></div>
+    <label><input type="checkbox" id="wire"> Wireframe</label>
+    <label><input type="checkbox" id="edges"> Edge lines</label>
+    <label><input type="checkbox" id="grid" checked> Grid and axes</label>
+    <label>Section cut:
+      <select id="clipAxis"><option value="">off</option><option>X</option><option>Y</option><option>Z</option></select>
+      <input type="range" id="clip" min="0" max="1" step="0.005" value="1" style="width:100%">
+    </label>
+    <label>Flip cut <input type="checkbox" id="clipflip"></label>
+  </div>
+  <div id="parts" style="display:none"></div>
+  <div id="msg" style="display:none"></div>
+</div>
+
+<script src="config.js"></script>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import {STLLoader} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/STLLoader.js';
+import {ThreeMFLoader} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/3MFLoader.js';
+import {OBJLoader} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
+import {unzipSync,strFromU8} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/fflate.module.js';
+
+const CFG=Object.assign({CLIENT_ID:'',API_KEY:'',DEFAULT_FOLDER:'',ALLOWED_EMAILS:[]},window.DOLLE_CONFIG||{});
+const $=id=>document.getElementById(id);
+const main=$('main');
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.localClippingEnabled=true;
+main.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x2b2f36);
+const camera=new THREE.PerspectiveCamera(40,1,0.1,100000); camera.up.set(0,0,1);
+const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true;
+scene.add(new THREE.HemisphereLight(0xffffff,0x444455,1.1));
+const d1=new THREE.DirectionalLight(0xffffff,1.6); d1.position.set(1,-1.5,2); scene.add(d1);
+const d2=new THREE.DirectionalLight(0xffffff,0.6); d2.position.set(-2,1,-1); scene.add(d2);
+let helpers=new THREE.Group(); scene.add(helpers);
+let current=null, bbox=new THREE.Box3(), clipPlane=new THREE.Plane(new THREE.Vector3(1,0,0),0);
+let items=[], selected=null;
+
+function resize(){const w=main.clientWidth,h=main.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener('resize',resize); resize();
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera)})();
+
+function say(t){const m=$('msg');m.style.display=t?'block':'none';m.textContent=t||''}
+function fmtSize(b){return b>1e6?(b/1e6).toFixed(1)+' MB':Math.max(1,Math.round(b/1e3))+' KB'}
+
+/* ---------- loading ---------- */
+let occtP=null;
+function occt(){ if(!occtP){ occtP=new Promise((res,rej)=>{
+  const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js';
+  s.onload=()=>occtimportjs({locateFile:()=>'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm'}).then(res,rej);
+  s.onerror=()=>rej(new Error('occt-import-js failed to load')); document.head.appendChild(s);});}
+  return occtP; }
+
+const mat=(c,flat)=>new THREE.MeshStandardMaterial({color:c??0xb8bec8,metalness:0.15,roughness:0.55,side:THREE.DoubleSide,flatShading:!!flat});
+
+async function loadStep(url){
+  const [o,buf]=await Promise.all([occt(),fetch(url).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer()})]);
+  const r=o.ReadStepFile(new Uint8Array(buf),{linearUnit:'millimeter',linearDeflectionType:'bounding_box_ratio',linearDeflection:0.001,angularDeflection:0.5});
+  if(!r.success) throw new Error('STEP read failed');
+  const g=new THREE.Group();
+  r.meshes.forEach((m,i)=>{
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(m.attributes.position.array,3));
+    if(m.attributes.normal) geo.setAttribute('normal',new THREE.Float32BufferAttribute(m.attributes.normal.array,3));
+    geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(m.index.array),1));
+    if(!m.attributes.normal) geo.computeVertexNormals();
+    const c=m.color?new THREE.Color(m.color[0],m.color[1],m.color[2]).getHex():null;
+    const mesh=new THREE.Mesh(geo,mat(c)); mesh.name=m.name||('part '+(i+1)); g.add(mesh);
+  });
+  return g;
+}
+async function loadStl(url){
+  const geo=await new Promise((res,rej)=>new STLLoader().load(url,res,undefined,rej));
+  geo.computeVertexNormals(); const m=new THREE.Mesh(geo,mat()); m.name='mesh'; const g=new THREE.Group(); g.add(m); return g;
+}
+/* Own 3MF reader: handles slicer projects (Bambu/Prusa) where objects live in sub-files (production extension),
+   and plain 3MF. Falls back to three.js's loader only if this one fails. */
+function parse3mfMatrix(t){
+  const m=new THREE.Matrix4(); if(!t) return m;
+  const a=t.trim().split(/\s+/).map(Number); if(a.length!==12||a.some(isNaN)) return m;
+  m.set(a[0],a[3],a[6],a[9], a[1],a[4],a[7],a[10], a[2],a[5],a[8],a[11], 0,0,0,1); return m;
+}
+async function load3mfOwn(url){
+  const buf=new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const files=unzipSync(buf,{filter:f=>/\.(model|config|rels)$/i.test(f.name)});
+  const get=p=>files[p.replace(/^\//,'')];
+  const dp=new DOMParser();
+  const docs={};
+  const docOf=p=>{ const k=p.replace(/^\//,''); if(!docs[k]){ const d=files[k]; if(!d) throw new Error('missing '+k);
+    const xml=dp.parseFromString(strFromU8(d),'application/xml'); const objs={};
+    xml.querySelectorAll('resources > object').forEach(o=>{
+      const id=o.getAttribute('id'); const mesh=o.querySelector(':scope > mesh');
+      if(mesh){ const vs=[...mesh.querySelectorAll('vertices > vertex')]; const pos=new Float32Array(vs.length*3);
+        vs.forEach((v,i)=>{pos[i*3]=+v.getAttribute('x');pos[i*3+1]=+v.getAttribute('y');pos[i*3+2]=+v.getAttribute('z');});
+        const ts=[...mesh.querySelectorAll('triangles > triangle')]; const idx=new Uint32Array(ts.length*3);
+        ts.forEach((t,i)=>{idx[i*3]=+t.getAttribute('v1');idx[i*3+1]=+t.getAttribute('v2');idx[i*3+2]=+t.getAttribute('v3');});
+        objs[id]={mesh:{pos,idx}}; }
+      else { const comps=[...o.querySelectorAll(':scope > components > component')].map(c=>({id:c.getAttribute('objectid'),
+          path:c.getAttributeNS('http://schemas.microsoft.com/3dmanufacturing/production/2015/06','path')||c.getAttribute('p:path'),
+          m:parse3mfMatrix(c.getAttribute('transform'))})); objs[id]={comps}; }
+    });
+    docs[k]={xml,objs}; } return docs[k]; };
+  // Bambu/Prusa names and plate membership (best effort)
+  const names={}, plateOf={};
+  try{ const cfg=files['Metadata/model_settings.config'];
+    if(cfg){ const x=dp.parseFromString(strFromU8(cfg),'application/xml');
+      x.querySelectorAll('config > object').forEach(o=>{ const nm=[...o.querySelectorAll(':scope > metadata')].find(m=>m.getAttribute('key')==='name'); if(nm) names[o.getAttribute('id')]=nm.getAttribute('value'); });
+      x.querySelectorAll('config > plate').forEach(p=>{ const pid=[...p.querySelectorAll(':scope > metadata')].find(m=>m.getAttribute('key')==='plater_id');
+        p.querySelectorAll('model_instance').forEach(mi=>{ const oid=[...mi.querySelectorAll('metadata')].find(m=>m.getAttribute('key')==='object_id'); if(oid&&pid) plateOf[oid.getAttribute('value')]=pid.getAttribute('value'); }); }); }
+  }catch(e){ console.warn('config parse',e); }
+  const root=new THREE.Group();
+  function inst(doc,id,path,label){
+    const d=path?docOf(path):doc; const o=d.objs[id]; if(!o) return null;
+    if(o.mesh){ const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(o.mesh.pos,3)); g.setIndex(new THREE.BufferAttribute(o.mesh.idx,1));
+      g.computeVertexNormals(); const me=new THREE.Mesh(g,mat(null,true)); me.name=label; return me; }
+    const grp=new THREE.Group(); (o.comps||[]).forEach(c=>{ const ch=inst(d,c.id,c.path||path,label); if(ch){ const w=new THREE.Group(); w.matrixAutoUpdate=false; w.matrix.copy(c.m); w.add(ch); grp.add(w);} }); return grp;
+  }
+  const main=docOf('3D/3dmodel.model');
+  main.xml.querySelectorAll('build > item').forEach(it=>{
+    const id=it.getAttribute('objectid'); const nm=names[id]||('object '+id); const pl=plateOf[id];
+    const label=(pl?('Plate '+pl+' · '):'')+nm;
+    const ch=inst(main,id,null,label); if(ch){ const w=new THREE.Group(); w.matrixAutoUpdate=false; w.matrix.copy(parse3mfMatrix(it.getAttribute('transform'))); w.add(ch); root.add(w); }
+  });
+  root.updateMatrixWorld(true);
+  let n=0; root.traverse(o=>{if(o.isMesh)n++}); if(!n) throw new Error('no meshes found');
+  return root;
+}
+async function load3mf(url){
+  try{ return await load3mfOwn(url); }
+  catch(e1){ console.warn('own 3MF reader failed, trying three.js loader:',e1);
+    const obj=await new Promise((res,rej)=>new ThreeMFLoader().load(url,res,undefined,rej));
+    obj.traverse(o=>{ if(o.isMesh&&!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); if(o.isMesh){ let c=o.material&&o.material.color?o.material.color.getHex():0xb8bec8; if(c<0x080808) c=0xb8bec8; o.material=mat(c,true); } });
+    return obj; }
+}
+async function loadObj(url){
+  const obj=await new Promise((res,rej)=>new OBJLoader().load(url,res,undefined,rej));
+  obj.traverse(o=>{ if(o.isMesh){ if(!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); o.material=mat(null,true); } }); return obj;
+}
+
+async function open(item){
+  selected=item; renderItems();
+  if(item.kind==='drawing'){ window.open(item.url,'_blank'); return; }
+  say('Loading '+item.name+' ('+fmtSize(item.size)+')…');
+  try{
+    const url=item.url;
+    let obj;
+    if(item.ext==='step'||item.ext==='stp') obj=await loadStep(url);
+    else if(item.ext==='stl') obj=await loadStl(url);
+    else if(item.ext==='3mf') obj=await load3mf(url);
+    else if(item.ext==='obj') obj=await loadObj(url);
+    show(obj,item); say('');
+  }catch(e){ say('Could not load '+item.name+': '+e.message); console.error(e); }
+}
+
+function show(obj,item){
+  if(current) scene.remove(current);
+  current=obj; scene.add(obj);
+  let tris=0,meshes=[];
+  obj.traverse(o=>{ if(o.isMesh){ meshes.push(o); const g=o.geometry; tris+=(g.index?g.index.count:g.attributes.position.count)/3; o.userData.mats=Array.isArray(o.material)?o.material:[o.material]; } });
+  bbox.setFromObject(obj);
+  const sz=bbox.getSize(new THREE.Vector3());
+  $('hud').innerHTML='<b>'+item.name+'</b><br>'+(item.folder?item.folder+'<br>':'')+
+    'Size (X×Y×Z): '+sz.x.toFixed(1)+' × '+sz.y.toFixed(1)+' × '+sz.z.toFixed(1)+' mm<br>'+
+    '= '+(sz.x/25.4).toFixed(2)+' × '+(sz.y/25.4).toFixed(2)+' × '+(sz.z/25.4).toFixed(2)+' in<br>'+
+    meshes.length+' part'+(meshes.length==1?'':'s')+', '+Math.round(tris).toLocaleString()+' triangles'+
+    '<br><span style="color:#aaa">Units assumed mm (STL/3MF carry no unit guarantee).</span>';
+  $('ctl').style.display='block';
+  buildParts(meshes);
+  $('wire').checked=false; $('edges').checked=false; $('clipAxis').value=''; applyClip();
+  buildHelpers(); fit();
+}
+
+function buildParts(meshes){
+  const p=$('parts'); p.innerHTML='';
+  if(meshes.length<2){p.style.display='none';return}
+  p.style.display='block';
+  const all=document.createElement('div'); all.innerHTML='<b>Parts ('+meshes.length+')</b> <button id="allon">all</button><button id="alloff">none</button>'; p.appendChild(all);
+  meshes.forEach((m,i)=>{
+    const d=document.createElement('div'); const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=true; cb.dataset.i=i;
+    cb.onchange=()=>{m.visible=cb.checked}; d.appendChild(cb);
+    const l=document.createElement('span'); l.textContent=' '+(m.name||('part '+(i+1))); l.style.cursor='pointer';
+    l.onclick=()=>{meshes.forEach(x=>x.visible=(x===m)); p.querySelectorAll('input').forEach(c=>c.checked=(+c.dataset.i===i));};
+    d.appendChild(l); p.appendChild(d);
+  });
+  $('allon').onclick=()=>{meshes.forEach(x=>x.visible=true);p.querySelectorAll('input').forEach(c=>c.checked=true)};
+  $('alloff').onclick=()=>{meshes.forEach(x=>x.visible=false);p.querySelectorAll('input').forEach(c=>c.checked=false)};
+}
+
+function buildHelpers(){
+  scene.remove(helpers); helpers=new THREE.Group(); scene.add(helpers);
+  const sz=bbox.getSize(new THREE.Vector3()), c=bbox.getCenter(new THREE.Vector3());
+  const span=Math.max(sz.x,sz.y,sz.z)||1;
+  const step=Math.pow(10,Math.floor(Math.log10(span/4)));
+  const n=Math.ceil(span*2.5/step), gh=new THREE.GridHelper(n*step,n,0x888888,0x444444);
+  gh.rotation.x=Math.PI/2; gh.position.set(c.x,c.y,bbox.min.z); helpers.add(gh);
+  const ax=new THREE.AxesHelper(span*0.4); ax.position.set(bbox.min.x,bbox.min.y,bbox.min.z); helpers.add(ax);
+  helpers.visible=$('grid').checked;
+}
+
+function fit(view){
+  const sz=bbox.getSize(new THREE.Vector3()), c=bbox.getCenter(new THREE.Vector3());
+  const r=Math.max(sz.x,sz.y,sz.z,1e-3)*1.25;
+  const dir={iso:[1,-1.2,0.9],top:[0,0.0001,1],front:[0,-1,0.0001],right:[1,0,0.0001]}[view||'iso'];
+  const v=new THREE.Vector3(...dir).normalize().multiplyScalar(r/Math.tan(THREE.MathUtils.degToRad(camera.fov/2))*0.6);
+  camera.position.copy(c).add(v); camera.near=r/1000; camera.far=r*100; camera.updateProjectionMatrix();
+  controls.target.copy(c); controls.update();
+}
+
+/* ---------- controls ---------- */
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>fit(b.dataset.v));
+$('fit').onclick=()=>fit();
+$('shot').onclick=()=>{const a=document.createElement('a');a.href=renderer.domElement.toDataURL('image/png');a.download=(selected?selected.name:'view')+'.png';a.click()};
+$('grid').onchange=()=>{helpers.visible=$('grid').checked};
+$('wire').onchange=()=>{ if(current) current.traverse(o=>{ if(o.isMesh) o.userData.mats.forEach(m=>m.wireframe=$('wire').checked); }); };
+$('edges').onchange=()=>{
+  if(!current) return; const on=$('edges').checked;
+  current.traverse(o=>{ if(o.isMesh){
+    if(on&&!o.userData.edge){ const e=new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry,35),new THREE.LineBasicMaterial({color:0x111111,clippingPlanes:o.userData.mats[0].clippingPlanes})); o.add(e); o.userData.edge=e; }
+    if(o.userData.edge) o.userData.edge.visible=on; } });
+};
+function applyClip(){
+  const ax=$('clipAxis').value; if(!current) return;
+  const on=!!ax; const idx={X:0,Y:1,Z:2}[ax];
+  if(on){ const n=new THREE.Vector3(); n.setComponent(idx,$('clipflip').checked?1:-1);
+    const lo=bbox.min.getComponent(idx), hi=bbox.max.getComponent(idx), t=$('clipflip').checked?1-$('clip').value:+$('clip').value;
+    clipPlane.normal.copy(n); const pos=lo+(hi-lo)*t; clipPlane.constant=-n.getComponent(idx)*pos; }
+  current.traverse(o=>{ if(o.isMesh){ o.userData.mats.forEach(m=>{m.clippingPlanes=on?[clipPlane]:[]; m.needsUpdate=true;});
+    if(o.userData.edge){o.userData.edge.material.clippingPlanes=on?[clipPlane]:[];o.userData.edge.material.needsUpdate=true;} } });
+}
+['clipAxis','clip','clipflip'].forEach(i=>$(i).oninput=applyClip);
+
+/* ---------- model list ---------- */
+function renderItems(){
+  const q=$('q').value.trim().toLowerCase(); const L=$('list'); L.innerHTML=''; let last=null, shown=0;
+  items.filter(m=>!q||(m.name+' '+m.folder).toLowerCase().includes(q)).forEach(m=>{
+    if(m.folder!==last){ const f=document.createElement('div'); f.className='folder'; f.textContent=m.folder||'(models)'; L.appendChild(f); last=m.folder; }
+    const d=document.createElement('div'); d.className='item'+(selected&&selected.path===m.path?' sel':'');
+    d.innerHTML='<span class="n"></span><span class="s">'+m.ext.toUpperCase()+' · '+fmtSize(m.size)+'</span>';
+    d.firstChild.textContent=m.name; if(m.kind==='drawing'){ const t=document.createElement('span'); t.className='tag'; t.textContent='drawing'; d.firstChild.appendChild(t); }
+    d.onclick=()=>open(m); L.appendChild(d); shown++; });
+  $('count').textContent=items.length?(shown+' of '+items.length+' files'):'No models loaded yet. Press Sync Drive, or add or drop CAD files (STEP, STL, 3MF, OBJ, or zips).';
+}
+
+/* ---------- files: local, Drive, cache ---------- */
+const CAD=new Set(['step','stp','stl','3mf','obj']), DOCS=new Set(['pdf']);
+const extOf=n=>(n.split('.').pop()||'').toLowerCase();
+function addItem(path,name,folder,blob){
+  const ext=extOf(name); if(!CAD.has(ext)&&!DOCS.has(ext)) return false;
+  const old=items.findIndex(m=>m.path===path); if(old>=0){ URL.revokeObjectURL(items[old].url); items.splice(old,1); }
+  items.push({path,name,folder,ext,size:blob.size,kind:DOCS.has(ext)?'drawing':'model',url:URL.createObjectURL(blob)});
+  items.sort((x,y)=>(x.folder.toLowerCase()+x.name.toLowerCase()).localeCompare(y.folder.toLowerCase()+y.name.toLowerCase()));
+  return true;
+}
+async function addZip(zname,folder,buf){
+  const files=unzipSync(new Uint8Array(buf),{filter:f=>!f.name.includes('__MACOSX')&&(CAD.has(extOf(f.name))||DOCS.has(extOf(f.name)))&&f.originalSize<500e6});
+  let n=0; for(const [p,data] of Object.entries(files)){ if(p.endsWith('/')) continue;
+    const parts=p.split('/'); const nm=parts.pop(); const fo=[folder,...parts].filter(Boolean).join('/');
+    if(addItem(fo+'/'+nm,nm,fo,new Blob([data]))) n++; }
+  return n;
+}
+async function addLocal(fileList){
+  let n=0; for(const f of fileList){
+    if(extOf(f.name)==='zip'){ try{ n+=await addZip(f.name,f.name.replace(/\.zip$/i,''),await f.arrayBuffer()); }catch(e){ say('Could not read '+f.name+': '+e.message); } }
+    else if(addItem('local/'+f.name,f.name,'(from this computer)',f)) n++; }
+  renderItems(); say(n?('Added '+n+' file'+(n==1?'':'s')+'.'):'No CAD files found (STEP, STL, 3MF, OBJ, PDF, or zips of them).'); setTimeout(()=>say(''),5000);
+}
+$('addf').onclick=()=>$('fileinp').click();
+$('fileinp').onchange=e=>{ addLocal([...e.target.files]); e.target.value=''; };
+let dragN=0;
+addEventListener('dragenter',e=>{e.preventDefault();dragN++;$('drop').style.display='flex'});
+addEventListener('dragleave',e=>{dragN=Math.max(0,dragN-1);if(!dragN)$('drop').style.display='none'});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();dragN=0;$('drop').style.display='none';if(e.dataTransfer.files.length)addLocal([...e.dataTransfer.files])});
+$('clr').onclick=()=>{ items.forEach(m=>URL.revokeObjectURL(m.url)); items=[]; selected=null; renderItems(); };
+
+/* IndexedDB cache so an unchanged Drive file is not downloaded twice */
+const idb=new Promise(res=>{ try{ const q=indexedDB.open('dolle-viewer',1); q.onupgradeneeded=()=>q.result.createObjectStore('files'); q.onsuccess=()=>res(q.result); q.onerror=()=>res(null);}catch(e){res(null)} });
+async function cacheGet(id){ const db=await idb; if(!db) return null; return new Promise(r=>{ const q=db.transaction('files').objectStore('files').get(id); q.onsuccess=()=>r(q.result||null); q.onerror=()=>r(null); }); }
+async function cachePut(id,v){ const db=await idb; if(!db) return; try{ db.transaction('files','readwrite').objectStore('files').put(v,id); }catch(e){} }
+
+/* ---------- Google Drive ---------- */
+const LS=(k,v)=>{ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v); }catch(e){} };
+function folderId(t){ t=(t||'').trim(); const m=t.match(/folders\/([A-Za-z0-9_-]{10,})/)||t.match(/[?&]id=([A-Za-z0-9_-]{10,})/)||t.match(/^([A-Za-z0-9_-]{15,})$/); return m?m[1]:''; }
+$('folder').value=new URLSearchParams(location.search).get('folder')||LS('dolle_folder')||CFG.DEFAULT_FOLDER||'';
+let token=null, tokenExp=0, tokenClient=null;
+function loadGis(){ return new Promise((res,rej)=>{ if(window.google&&google.accounts&&google.accounts.oauth2) return res();
+  const sc=document.createElement('script'); sc.src='https://accounts.google.com/gsi/client'; sc.onload=res; sc.onerror=()=>rej(new Error('Could not load Google sign-in (blocked or offline).')); document.head.appendChild(sc); }); }
+async function sha256(t){ const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)); return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+async function emailAllowed(tok){
+  const list=(CFG.ALLOWED_EMAILS||[]).map(x=>String(x).trim().toLowerCase()).filter(Boolean);
+  if(!list.length) return {ok:true};
+  const r=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+tok}});
+  if(!r.ok) return {ok:false,email:'(unknown)'};
+  const j=await r.json(); const em=(j.email||'').toLowerCase();
+  if(!j.email_verified&&j.email_verified!==undefined) return {ok:false,email:em};
+  return {ok:!!em&&(list.includes(em)||list.includes(await sha256(em))),email:em};
+}
+async function getToken(){
+  if(token&&Date.now()<tokenExp-60000) return token;
+  await loadGis();
+  return new Promise((res,rej)=>{
+    tokenClient=google.accounts.oauth2.initTokenClient({client_id:CFG.CLIENT_ID,scope:'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email',
+      callback:async r=>{ if(r.error) return rej(new Error(r.error_description||r.error));
+        try{ const a=await emailAllowed(r.access_token);
+          if(!a.ok){ try{ google.accounts.oauth2.revoke(r.access_token); }catch(e){} return rej(new Error('Access is limited to approved accounts. '+a.email+' is not on the list.')); }
+        }catch(e){ return rej(new Error('Could not check your account: '+e.message)); }
+        token=r.access_token; tokenExp=Date.now()+(r.expires_in||3600)*1000; res(token); },
+      error_callback:e=>rej(new Error(e.message||e.type||'sign-in cancelled'))});
+    tokenClient.requestAccessToken({prompt:token?'':'select_account'}); });
+}
+async function gfetch(url){
+  const h={}; let u=url;
+  if(CFG.CLIENT_ID){ h.Authorization='Bearer '+await getToken(); }
+  else if(CFG.API_KEY&&!(CFG.ALLOWED_EMAILS||[]).length){ u+=(u.includes('?')?'&':'?')+'key='+encodeURIComponent(CFG.API_KEY); }
+  const r=await fetch(u,{headers:h});
+  if(r.status===401||r.status===403||r.status===404){ let m=''; try{ m=(await r.json()).error.message; }catch(e){}
+    throw new Error('Drive said '+r.status+(m?': '+m:'')+(CFG.CLIENT_ID?'. Is the folder shared with the Google account you signed in with?':'. The folder must be shared as “Anyone with the link”.')); }
+  if(!r.ok) throw new Error('Drive error '+r.status); return r;
+}
+async function listFolder(id,path,out){
+  let pt=''; do{
+    const q=encodeURIComponent("'"+id+"' in parents and trashed=false");
+    const r=await gfetch('https://www.googleapis.com/drive/v3/files?q='+q+'&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields='+encodeURIComponent('nextPageToken,files(id,name,mimeType,size,modifiedTime)')+(pt?'&pageToken='+pt:''));
+    const j=await r.json(); pt=j.nextPageToken||'';
+    for(const f of j.files){
+      if(f.mimeType==='application/vnd.google-apps.folder') await listFolder(f.id,path?path+'/'+f.name:f.name,out);
+      else if(CAD.has(extOf(f.name))||DOCS.has(extOf(f.name))||extOf(f.name)==='zip') out.push({...f,folder:path});
+    } }while(pt);
+}
+function prog(p){ $('prog').style.display=p==null?'none':'block'; $('prog').firstChild.style.width=((p||0)*100)+'%'; }
+$('sync').onclick=async()=>{
+  const help=$('help'); help.style.display='none';
+  if(!CFG.CLIENT_ID&&!(CFG.API_KEY&&!(CFG.ALLOWED_EMAILS||[]).length)){ help.style.display='block';
+    help.innerHTML='Sync Drive needs a Google client ID (private folders) or API key (public folders) in <code>config.js</code>. See README.md, section “One-time Google setup”. You can still use <b>Add files…</b> or drag and drop.'; return; }
+  const id=folderId($('folder').value); if(!id){ help.style.display='block'; help.textContent='Paste the Drive folder link (the address of the folder in your browser) in the box.'; return; }
+  LS('dolle_folder',$('folder').value.trim());
+  $('sync').disabled=true; prog(0);
+  try{
+    say('Listing the Drive folder…'); const files=[]; await listFolder(id,'',files);
+    if(!files.length){ say('No CAD files, PDFs or zips found in that folder.'); return; }
+    let done=0,fresh=0,added=0,failed=[]; const total=files.reduce((a,f)=>a+(+f.size||0),0)||1; let got=0;
+    for(const f of files){
+      say('Syncing '+(done+1)+' of '+files.length+': '+f.name+' ('+fmtSize(+f.size||0)+')…');
+      try{
+        let blob; const c=await cacheGet(f.id);
+        if(c&&c.mt===f.modifiedTime) blob=c.blob;
+        else{ const r=await gfetch('https://www.googleapis.com/drive/v3/files/'+f.id+'?alt=media&supportsAllDrives=true'); blob=await r.blob(); await cachePut(f.id,{mt:f.modifiedTime,blob}); fresh++; }
+        if(extOf(f.name)==='zip') added+=await addZip(f.name,[f.folder,f.name.replace(/\.zip$/i,'')].filter(Boolean).join('/'),await blob.arrayBuffer());
+        else if(addItem((f.folder?f.folder+'/':'')+f.name,f.name,f.folder||'(top folder)',blob)) added++;
+      }catch(e){ failed.push(f.name+' ('+e.message+')'); }
+      got+=+f.size||0; done++; prog(got/total); renderItems();
+    }
+    say('Synced '+added+' file'+(added==1?'':'s')+' ('+fresh+' downloaded, '+(files.length-fresh-failed.length)+' from cache)'+(failed.length?'. Failed: '+failed.join('; '):'.'));
+    await window.__open();
+  }catch(e){ say('Sync failed: '+e.message); console.error(e); }
+  finally{ $('sync').disabled=false; prog(null); setTimeout(()=>{ if($('msg').textContent.startsWith('Synced')) say(''); },15000); }
+};
+
+/* ---------- entry gate: only listed Google accounts get past the sign-in screen ---------- */
+(function(){
+  const list=(CFG.ALLOWED_EMAILS||[]).filter(Boolean); if(!list.length) return;
+  const g=document.createElement('div'); g.id='gate';
+  g.innerHTML='<div class="box"><h2>DOLL-E 3D models</h2><p>This viewer is limited to approved team accounts. Sign in with your Google account to continue.</p><button class="pri" id="gbtn">Sign in with Google</button><div class="err" id="gerr"></div></div>';
+  document.body.appendChild(g);
+  if(!CFG.CLIENT_ID){ $('gbtn').style.display='none'; $('gerr').textContent='Sign-in is not set up yet: the site owner needs to add a Google client ID in config.js.'; return; }
+  $('gbtn').onclick=async()=>{ $('gerr').textContent=''; $('gbtn').disabled=true;
+    try{ await getToken(); g.remove(); }
+    catch(e){ $('gerr').textContent=e.message; $('gbtn').textContent='Try another account'; }
+    finally{ $('gbtn').disabled=false; } };
+})();
+$('q').oninput=renderItems;
+renderItems();
+const qs=new URLSearchParams(location.search).get('open');
+const qv=new URLSearchParams(location.search).get('view');
+if(new URLSearchParams(location.search).get('sync')==='1') $('sync').click();
+window.__open=async()=>{ if(qs){ const it=items.find(m=>m.path===qs||m.name===qs); if(it){ await open(it); if(qv) fit(qv); } } };
+</script>
+</body></html>
